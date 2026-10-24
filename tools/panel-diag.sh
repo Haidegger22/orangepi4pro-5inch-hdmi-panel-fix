@@ -42,5 +42,10 @@ echo "== процессы-помощники =="
 pgrep -af 'hdmi-panel-watch|temp-widget' | grep -v 'grep'
 
 echo
+echo "== служба сторожа =="
+systemctl is-enabled hdmi-panel-watch 2>/dev/null
+systemctl is-active hdmi-panel-watch 2>/dev/null
+
+echo
 echo "== тачскрин (USB) =="
 lsusb 2>/dev/null | grep -i 0484 || echo "QDtech (0484:xxxx) не найден"

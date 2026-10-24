@@ -56,11 +56,12 @@ sunxi-hdmi: [warn] snps phy check clk: 49000Hz is match in [44900Hz-49500Hz] and
 Дальше работает вторая проблема — порядок режимов при загрузке:
 
 ```
-1.8-6.1 с  ядро ставит 1920x1080 (первый режим из EDID)
-9.7 с      X переключается на 1024x600
-10.4 с     панель перестраивается и на ~0.3 с роняет линию HPD
+1.9 с      ядро ставит 1920x1080 (первый режим из EDID)
+3.3 с      после переподключения линии — снова 1920x1080
+9.5 с      X переключается на 1024x600
+10.2 с     панель перестраивается и на ~0.3 с роняет линию HPD
            (hpd disconnect -> hpd connect)
-после возврата линии драйвер режим не переставляет — экран остаётся чёрным
+после возврата линии драйвер режим НЕ переставляет — экран остаётся чёрным
 ```
 
 То есть панель получает чужой режим, потом правильный, на смене дёргает линию —
@@ -76,15 +77,38 @@ sunxi-hdmi: [warn] snps phy check clk: 49000Hz is match in [44900Hz-49500Hz] and
 2. **`files/set-display-1024x600.sh`** — страховка на случай, если режим всё же
    сбился: ставит паспортный режим, убирает ошибочный `1024x600_60.00` из списка
    и выключает гашение (`xset s off`, `-dpms`, `s noblank`).
-3. **`files/hdmi-panel-watch.sh`** — сторож линии HPD. Опрашивает
-   `/sys/class/drm/card0-HDMI-A-1/status` каждые 0.3 с (обрыв длится ~0.3 с, редкий
-   опрос его не видит) и один раз переустанавливает режим после старта сеанса.
-   **Ровно один раз:** два переключения подряд панель не переживает — после второго
-   она снова роняет линию и больше не поднимается. Это и есть тот самый симптом
-   «стол появился и снова исчез».
-4. **`autostart/*.desktop`** — автозапуск обоих скриптов в сессии XFCE.
+3. **`files/hdmi-panel-watch.sh` + `systemd/hdmi-panel-watch.service`** — сторож
+   линии HPD, работает **системной службой от root**. Логика:
+   - при старте читает **журнал ядра** и смотрит, был ли `hpd disconnect` после
+     последнего `mode set: 1024*600`. Если был — панель уже потеряла линию, сторож
+     один раз будит её переключением `--off` → `--mode`;
+   - если обрыва не было — выход **не трогает вообще** (профилактическое
+     переключение при живой панели само вызывает обрыв и гасит экран);
+   - дальше опрашивает `/sys/class/drm/card0-HDMI-A-1/status` каждые 0.3 с (обрыв
+     длится ~0.3 с, редкий опрос его не видит) и реагирует только на реальную
+     потерю линии, не чаще раза в минуту.
+
+   Почему служба, а не автозапуск в сеансе: у пользователя `kernel.dmesg_restrict=1`
+   (журнал ядра закрыт), а автозапуск сеанса поднимается **позже** обрыва — обрыв на
+   10-й секунде, сеанс стартует около 11-й, и событие пропускается.
+4. **`autostart/display-1024x600.desktop`** — автозапуск скрипта режима в сессии XFCE.
 5. **`tools/panel-diag.sh`** — диагностика «что видит система»: разъёмы, режимы,
-   EDID, журнал HPD, процессы, тач. Ничего не меняет.
+   EDID, журнал HPD, служба, тач. Ничего не меняет.
+
+### Почему не задать режим параметром ядра
+
+Пробовали, на этой плате не работает:
+
+- `video=HDMI-A-1:D` ядро понимает не как «взять режим из EDID», а как тип выхода:
+  в журнале появляется `mode set: 1024*768`, потом снова 1920x1080;
+- режим `1024x600@66` из командной строки не выбрать: родной режим панели
+  **отсутствует в списке режимов ядра** — вендорный разбор EDID в `sunxi-hdmi`
+  отбрасывает этот DTD (`unsupport parser desc type`). В
+  `/sys/class/drm/card0-HDMI-A-1/modes` только 1920x1080, 1280x1024, 1440x900
+  и 1280x720.
+
+Xorg разбирает тот же EDID сам и видит правильный режим — поэтому настройка живёт
+на уровне X, а не в командной строке ядра.
 
 ## Установка
 
@@ -96,11 +120,20 @@ sunxi-hdmi: [warn] snps phy check clk: 49000Hz is match in [44900Hz-49500Hz] and
 ```bash
 git clone https://github.com/Haidegger22/orangepi4pro-5inch-hdmi-panel-fix.git
 cd orangepi4pro-5inch-hdmi-panel-fix
-sudo cp -a /etc/X11/xorg.conf.d/20-modesetting.conf /etc/X11/xorg.conf.d/20-modesetting.conf.bak-$(date +%Y%m%d)
+
+sudo cp -a /etc/X11/xorg.conf.d/20-modesetting.conf \
+           /etc/X11/xorg.conf.d/20-modesetting.conf.bak-$(date +%Y%m%d)
 sudo install -m 0664 files/20-modesetting.conf /etc/X11/xorg.conf.d/20-modesetting.conf
+
 install -d ~/.local/bin ~/.config/autostart
-install -m 0755 files/set-display-1024x600.sh files/hdmi-panel-watch.sh ~/.local/bin/
-cp autostart/*.desktop ~/.config/autostart/
+install -m 0755 files/set-display-1024x600.sh ~/.local/bin/
+install -m 0644 autostart/display-1024x600.desktop ~/.config/autostart/
+
+sudo install -m 0755 files/hdmi-panel-watch.sh /usr/local/bin/hdmi-panel-watch.sh
+sudo install -m 0644 systemd/hdmi-panel-watch.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hdmi-panel-watch
+
 sudo systemctl restart lightdm
 ```
 
@@ -108,6 +141,7 @@ sudo systemctl restart lightdm
 
 ```bash
 bash tools/panel-diag.sh
+systemctl is-enabled hdmi-panel-watch; systemctl is-active hdmi-panel-watch
 ```
 
 Что должно быть видно:
@@ -115,21 +149,22 @@ bash tools/panel-diag.sh
 - `HDMI-1 connected 1024x600+0+0`;
 - `panel_1024x600 66.45*+` в списке режимов;
 - в журнале ядра `pixel clock 50000KHz` и `snps phy state: lock`;
-- после 20-й секунды загрузки — ни одного `hpd disconnect`;
-- процессы `hdmi-panel-watch` и `set-display-1024x600` живы.
+- после 13-й секунды загрузки — ни одного нового `hpd disconnect`;
+- служба `hdmi-panel-watch` в состоянии `enabled` / `active`.
 
 ## Ограничения
 
-- **Сенсор.** Тач определяется как USB-HID, но в ядре `6.6.98-sun60iw2` выключен
-  `CONFIG_HID_MULTITOUCH`, поэтому мультитач не работает. Сборка модуля —
-  отдельный репозиторий: [opi-zero3w-hid-multitouch-fix](https://github.com/Haidegger22/opi-zero3w-hid-multitouch-fix)
-  (тот же тач `0484:5750`, то же ядро).
+- **Сенсор.** Мультитач требует модуля `hid-multitouch`, которого нет в ядре
+  (`CONFIG_HID_MULTITOUCH is not set`). Сборка модуля под это ядро — отдельная
+  задача; рецепт есть в репозитории
+  [opi-zero3w-hid-multitouch-fix](https://github.com/Haidegger22/opi-zero3w-hid-multitouch-fix)
+  (тот же тач `0484:5750`, та же ветка ядра).
 - **Кабель и питание тут ни при чём.** Проверено: с исправным кабелем EDID читается
   полностью, перестановка USB-C с порта USB 2.0 на USB 3.0 картину не меняет.
   Не доверяйте `stat -c %s /sys/class/drm/card0-HDMI-A-1/edid` — для sysfs-атрибута
   он всегда равен 0; читайте сам файл (`od -An -tx1`).
 - **Другой экран — другие цифры.** Возьмите моделайн из EDID своей панели:
-  `DISPLAY=:0 xrandr --verbose | grep -A2 EDID` либо `/var/log/Xorg.0.log`
+  `DISPLAY=:0 xrandr --verbose` (раздел EDID) либо `/var/log/Xorg.0.log`
   (`Modeline "..."x0.0 ... (DDC gathered)`).
 - **Только X11.** При Wayland (Weston/labwc) на `sun60iw2` KMS-коммит не работает,
   `xrandr` не применяется — способ не подойдёт.
@@ -137,9 +172,12 @@ bash tools/panel-diag.sh
 ## Откат
 
 ```bash
-sudo cp -a /etc/X11/xorg.conf.d/20-modesetting.conf.bak-* /etc/X11/xorg.conf.d/20-modesetting.conf
-rm -f ~/.local/bin/set-display-1024x600.sh ~/.local/bin/hdmi-panel-watch.sh \
-      ~/.config/autostart/display-1024x600.desktop ~/.config/autostart/hdmi-panel-watch.desktop
+sudo cp -a $(ls -t /etc/X11/xorg.conf.d/20-modesetting.conf.bak-* | head -1) \
+           /etc/X11/xorg.conf.d/20-modesetting.conf
+sudo systemctl disable --now hdmi-panel-watch
+sudo rm -f /usr/local/bin/hdmi-panel-watch.sh /etc/systemd/system/hdmi-panel-watch.service
+sudo systemctl daemon-reload
+rm -f ~/.local/bin/set-display-1024x600.sh ~/.config/autostart/display-1024x600.desktop
 sudo systemctl restart lightdm
 ```
 

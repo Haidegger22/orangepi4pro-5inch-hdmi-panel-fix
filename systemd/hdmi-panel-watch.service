@@ -1,0 +1,13 @@
+[Unit]
+Description=HDMI panel watchdog (5-inch 1024x600 panel on Orange Pi 4 Pro)
+After=display-manager.service
+Wants=display-manager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hdmi-panel-watch.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
