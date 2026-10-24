@@ -110,6 +110,25 @@ sunxi-hdmi: [warn] snps phy check clk: 49000Hz is match in [44900Hz-49500Hz] and
 Xorg разбирает тот же EDID сам и видит правильный режим — поэтому настройка живёт
 на уровне X, а не в командной строке ядра.
 
+## Тач и мультитач
+
+Тач панели — отдельное USB-HID устройство `0484:5750`. В ядре `6.6.98-sun60iw2`
+выключен `CONFIG_HID_MULTITOUCH`, поэтому без модуля касания отдают мусорные
+координаты (все — в правый нижний угол, курсор не двигается), хотя в журнале
+устройство выглядит исправным.
+
+Модуль собран и проверен на этой плате; полный рецепт без заголовков ядра —
+**[docs/hid-multitouch-4pro.md](docs/hid-multitouch-4pro.md)**. Кратко: клонировать
+вендорную ветку `orange-pi-6.6-sun60iw2`, сгенерировать `Module.symvers` из
+`/proc/kallsyms` (формат 6.6 — пять полей с завершающим табом), добавить в
+`mt_devices[]` строку `HID_USB_DEVICE(0x0484, 0x5750)` (готовый патч лежит в
+`patches/`), собрать `hid-multitouch.ko` и прописать автозагрузку.
+
+Признак успеха — в возможностях устройства появляются `ABS_MT_POSITION_X/Y`,
+`ABS_MT_SLOT` и `ABS_MT_TRACKING_ID`: `cat /sys/class/input/event6/device/capabilities/abs`
+показывает `273800000000003` вместо `10000000003`.
+
+
 ## Установка
 
 Полная пошаговая инструкция с готовыми блоками для копирования (включая полный код
@@ -155,10 +174,8 @@ systemctl is-enabled hdmi-panel-watch; systemctl is-active hdmi-panel-watch
 ## Ограничения
 
 - **Сенсор.** Мультитач требует модуля `hid-multitouch`, которого нет в ядре
-  (`CONFIG_HID_MULTITOUCH is not set`). Сборка модуля под это ядро — отдельная
-  задача; рецепт есть в репозитории
-  [opi-zero3w-hid-multitouch-fix](https://github.com/Haidegger22/opi-zero3w-hid-multitouch-fix)
-  (тот же тач `0484:5750`, та же ветка ядра).
+  (`CONFIG_HID_MULTITOUCH is not set`). Для этой панели модуль уже собран и проверен,
+  рецепт — [docs/hid-multitouch-4pro.md](docs/hid-multitouch-4pro.md).
 - **Кабель и питание тут ни при чём.** Проверено: с исправным кабелем EDID читается
   полностью, перестановка USB-C с порта USB 2.0 на USB 3.0 картину не меняет.
   Не доверяйте `stat -c %s /sys/class/drm/card0-HDMI-A-1/edid` — для sysfs-атрибута

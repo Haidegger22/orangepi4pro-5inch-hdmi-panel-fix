@@ -1,0 +1,10 @@
+--- a/drivers/hid/hid-multitouch.c
++++ b/drivers/hid/hid-multitouch.c
+@@ -2304,6 +2304,7 @@ static const struct hid_device_id mt_devices[] = {
+ 	{  .driver_data = MT_CLS_WIN_8,
+ 		HID_DEVICE(HID_BUS_ANY, HID_GROUP_MULTITOUCH_WIN_8,
+ 			HID_ANY_ID, HID_ANY_ID) },
++	{ HID_USB_DEVICE(0x0484, 0x5750), .driver_data = MT_CLS_DEFAULT },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(hid, mt_devices);

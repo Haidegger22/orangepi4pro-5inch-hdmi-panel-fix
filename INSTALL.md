@@ -199,6 +199,28 @@ sudo reboot
 
 ---
 
+## Шаг 8 (по желанию). Мультитач тачскрина
+
+В ядре выключен `CONFIG_HID_MULTITOUCH`, поэтому без модуля касания работают
+неправильно (все координаты уходят в угол, курсор не двигается). Модуль уже собран
+и проверен на этой панели; полный рецепт — **[docs/hid-multitouch-4pro.md](docs/hid-multitouch-4pro.md)**,
+готовый патч драйвера — `patches/hid-multitouch-add-qdtech-mpi5001.patch`.
+
+Коротко: собрать `hid-multitouch.ko` из вендорной ветки ядра
+`orange-pi-6.6-sun60iw2`, положить в `/lib/modules/$(uname -r)/kernel/drivers/hid/`,
+выполнить `depmod -a` и прописать `hid-multitouch` в
+`/etc/modules-load.d/hid-multitouch.conf`.
+
+Проверка после перезагрузки:
+
+```bash
+lsmod | grep hid_multitouch
+ls /sys/bus/hid/drivers/hid-multitouch/
+cat /sys/class/input/event6/device/capabilities/abs   # ожидается 273800000000003
+```
+
+---
+
 ## Полный код файлов (установка без git)
 
 ### 1. Конфиг Xorg
