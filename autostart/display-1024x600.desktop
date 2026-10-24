@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Display 1024x600
+Comment=Set 5-inch HDMI panel to 1024x600 after login
+Exec=sh -c "sleep 3; $HOME/.local/bin/set-display-1024x600.sh"
+Terminal=false
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-enabled=true

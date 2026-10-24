@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=HDMI panel watchdog
+Comment=Re-enable the 5-inch panel after an HDMI hot-plug drop
+Exec=sh -c "$HOME/.local/bin/hdmi-panel-watch.sh"
+Terminal=false
+StartupNotify=false
+NoDisplay=true
