@@ -20,6 +20,18 @@ for d in /sys/class/drm/card*-*; do
 done
 
 echo
+echo "== DTB: принудительный режим HDMI =="
+DTB=/boot/dtb/allwinner/sun60i-a733-orangepi-4-pro.dtb
+if command -v fdtget >/dev/null 2>&1 && [ -r "$DTB" ]; then
+    printf 'force-output: '
+    fdtget -t i "$DTB" /soc@3000000/hdmi0@5520000 force-output 2>/dev/null || echo "нет"
+    printf 'force-output-timing: '
+    fdtget -t s "$DTB" /soc@3000000/hdmi0@5520000 force-output-timing 2>/dev/null || echo "нет"
+else
+    echo "fdtget или $DTB недоступны"
+fi
+
+echo
 echo "== статус линии и режимы ядра =="
 cat "$STATUS" 2>/dev/null
 cat /sys/class/drm/card0-HDMI-A-1/modes 2>/dev/null
@@ -34,17 +46,15 @@ echo "== X: активный режим =="
 xrandr --query 2>&1 | grep -m1 '^HDMI-1'
 
 echo
-echo "== журнал ядра: HDMI/HPD =="
-dmesg 2>/dev/null | grep -iE 'sunxi-hdmi|hpd|phy state' | tail -12
+echo "== журнал ядра: режим и HPD =="
+dmesg 2>/dev/null | grep -iE 'Configuration mode|mode set:|hpd (dis)?connect|phy state' | tail -16
 
 echo
-echo "== процессы-помощники =="
-pgrep -af 'hdmi-panel-watch|temp-widget' | grep -v 'grep'
-
-echo
-echo "== служба сторожа =="
-systemctl is-enabled hdmi-panel-watch 2>/dev/null
-systemctl is-active hdmi-panel-watch 2>/dev/null
+echo "== старые обходные пути (должны быть выключены) =="
+for s in hdmi-panel-watch panel-wake-once; do
+    state=$(systemctl is-enabled "$s" 2>/dev/null || true)
+    printf '%s: %s\n' "$s" "${state:-нет}"
+done
 
 echo
 echo "== тачскрин (USB) =="

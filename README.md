@@ -1,202 +1,158 @@
-# Orange Pi 4 Pro — фикс 5" HDMI-панели 1024x600
+# Orange Pi 4 Pro — фикс 5" HDMI-панели 1024×600
 
 Готовая настройка для Orange Pi 4 Pro, чтобы маленький HDMI-экран **не гас после
-загрузки** и всегда стартовал в своём родном разрешении.
+загрузки** и всегда стартовал в родном разрешении 1024×600.
 
-Проверено на реальной плате и реальной панели, не теория.
+Проверено на реальной плате и панели QDtech MPI5001 (EDID сообщает MPI5006).
 
 ## Железо и система
 
 | Что | Значение |
 |---|---|
-| Плата | Orange Pi 4 Pro, SoC Allwinner A733 (`sun60iw2`), 12 ГБ |
+| Плата | Orange Pi 4 Pro, Allwinner A733 (`sun60iw2`) |
 | ОС | Debian 13 Trixie, образ Orange Pi 1.1.0 |
 | Ядро | `6.6.98-sun60iw2` |
-| Графика | Xorg (modesetting) + XFCE, сессия X11 |
-| Экран | 5" IPS 1024x600, HDMI, ёмкостный тач |
-| Идентификация | USB `0484:5750` QDtech MPI5001; EDID — MPI5006 |
-| Питание экрана | USB Type-C, 5 В |
+| Графика | Xorg (modesetting), X11 |
+| Экран | 5" IPS 1024×600, HDMI, ёмкостный тач |
+| Тач | USB `0484:5750`, QDtech MPI5001 |
+| EDID | MPI5006, 128 байт, DTD 1024×600, 50.000 МГц |
 
-Панель подключается **только по HDMI** — разъёма DSI у 4 Pro в системе нет вообще
-(`/sys/class/drm` содержит лишь `card0-HDMI-A-1`). Тач приходит отдельным USB-HID.
-Своей регулировки яркости в sysfs нет (`/sys/class/backlight` пуст) — яркость живёт
+Панель подключена только по HDMI; тач приходит отдельным USB-HID. Своей
+регулировки яркости в sysfs нет (`/sys/class/backlight` пуст) — яркость живёт
 в самой панели.
 
 ## Симптом
 
-После загрузки рабочий стол появляется на несколько секунд и экран гаснет. Дальше
-не будится ни мышью, ни клавиатурой — при этом плата жива, по SSH отвечает, X
-считает выход исправным. Если вручную переключить выход — картинка возвращается
-до следующей перезагрузки.
+После загрузки рабочий стол появляется на 1–2 секунды и экран гаснет. Плата жива,
+SSH отвечает, `xrandr` показывает активный режим и `connected`, но физически
+выход выключен. Иногда помогает ручное `xrandr --output HDMI-1 --off`, пауза и
+`--mode panel_1024x600`, но не всегда.
 
-Часто этому предшествует «лечение» разрешения через `cvt`:
+## Причина
 
-```bash
-xrandr --newmode "1024x600_60.00" 49.00 1024 1064 1168 1312 600 601 604 622 -HSync +VSync
+1. Панель отдаёт EDID с режимом **1024×600, 50.000 МГц, 66.45 Гц**
+   (строчная 41.5 кГц, DTD `50.00 1024 1032 1042 1204 600 603 609 625`).
+2. Вендорный драйвер `sunxi-hdmi` в `_sunxi_drm_hdmi_mode_valid()` отбрасывает
+   режимы с частотой **выше 60 Гц** (`rate > 60 → MODE_BAD`). Поэтому в
+   `/sys/class/drm/card0-HDMI-A-1/modes` нет 1024×600, и ядро при загрузке
+   выбирает первый доступный режим — обычно **1920×1080**.
+3. X позже ставит 1024×600 своим modeline. Панель в этот момент дёргает HPD:
+   `disconnect` → `connect`.
+4. На `hpd disconnect` драйвер вызывает `_sunxi_drv_hdmi_hpd_plugout()`:
+   выключает HDMI и очищает `drm_mode_set`. На `hpd connect`
+   `_sunxi_drv_hdmi_hpd_plugin()` только заново читает EDID — режим обратно не
+   включает. X считает выход активным, но физически он уже выключен.
+5. `off → mode` иногда помогает, потому что пересобирает CRTC. Но это гонка:
+   если панель снова дёрнет HPD после mode set или сторож не поймал короткий
+   обрыв, экран остаётся чёрным.
+
+`de 1 not enable, skip` в журнале — не причина. Это второй DE-путь; основной
+CRTC работает через DE0.
+
+Режим из `cvt` (`49.00 МГц`, 60 Гц) тоже неверный: у панели 50.000 МГц и 66.45 Гц,
+поэтому старые советы с `1024x600_60.00` из репозитория убраны.
+
+## Решение: штатные DT-свойства драйвера
+
+В узел `hdmi0@5520000` добавляются два свойства:
+
+```dts
+force-output = <1>;
+force-output-timing = "50000-1024-1032-1042-1204-600-603-609-625";
 ```
 
-Такой режим **неверный**: у панели паспортная частота пикселей 50.000 МГц, а не 49.00.
+`force-output-timing` задаёт режим в формате
+`clock-hdisplay-hsync_start-hsync_end-htotal-vdisplay-vsync_start-vsync_end-vtotal`
+(clock в кГц). Драйвер добавляет этот режим и обходит фильтр `>60 Гц`.
 
-## Причина (по журналу ядра)
+Ядро ставит **1024×600@66.45** ещё на ~1.9 с, до старта X. Переключения
+1920×1080 → 1024×600 и HPD-обрыва после него больше нет.
 
-Панель сама сообщает свои параметры в EDID:
+Важно: **ядро пересобирать не нужно**, правится только DTB.
 
-```
-50.00 1024 1032 1042 1204 600 603 609 625 -hsync +vsync
-```
+## Что в репозитории
 
-Это 1024x600 при частоте пикселей 50.000 МГц, строчной 41.5 кГц и кадровой 66.45 Гц.
-Режим из `cvt` даёт 49.00 МГц и строчную 37.3 кГц — не совпадает, поэтому картинка
-«ловится» и срывается. В журнале ядра это видно прямой строкой:
+- `files/20-modesetting.conf` — Xorg modeline и `PreferredMode` как страховка
+  для X-сессии.
+- `files/set-display-1024x600.sh` — необязательный скрипт ручной установки
+  режима (если X всё же стартовал не в нём).
+- `autostart/display-1024x600.desktop` — необязательный автозапуск скрипта.
+- `tools/panel-diag.sh` — диагностика: DTB-свойства, режимы, HPD, X, тач.
+- `tools/apply-dtb-force-output.sh` — повторно применить DTB-свойства после
+  обновления системы (с бэкапом).
+- `docs/dtb-force-output.md` — подробный разбор и команды.
+- `docs/hid-multitouch-4pro.md` — модуль мультитача.
+- `patches/` — патч `hid-multitouch` для QDtech MPI5001.
 
-```
-sunxi-hdmi: [warn] snps phy check clk: 49000Hz is match in [44900Hz-49500Hz] and change use: 49500Hz
-```
-
-Дальше работает вторая проблема — порядок режимов при загрузке:
-
-```
-1.9 с      ядро ставит 1920x1080 (первый режим из EDID)
-3.3 с      после переподключения линии — снова 1920x1080
-9.5 с      X переключается на 1024x600
-10.2 с     панель перестраивается и на ~0.3 с роняет линию HPD
-           (hpd disconnect -> hpd connect)
-после возврата линии драйвер режим НЕ переставляет — экран остаётся чёрным
-```
-
-То есть панель получает чужой режим, потом правильный, на смене дёргает линию —
-и остаётся ни с чем.
-
-## Что делает этот репозиторий
-
-1. **`files/20-modesetting.conf`** — в секцию `Monitor "Default Monitor"` добавлены
-   `Modeline` с паспортным режимом и `Option "PreferredMode"`. Теперь X стартует
-   сразу в 1024x600, не показывая панели 1920x1080. Признак в `/var/log/Xorg.0.log`:
-   `Using user preference for initial modes` и
-   `Output HDMI-1 using initial mode panel_1024x600`.
-2. **`files/set-display-1024x600.sh`** — страховка на случай, если режим всё же
-   сбился: ставит паспортный режим, убирает ошибочный `1024x600_60.00` из списка
-   и выключает гашение (`xset s off`, `-dpms`, `s noblank`).
-3. **`files/hdmi-panel-watch.sh` + `systemd/hdmi-panel-watch.service`** — сторож
-   линии HPD, работает **системной службой от root**. Логика:
-   - при старте читает **журнал ядра** и смотрит, был ли `hpd disconnect` после
-     последнего `mode set: 1024*600`. Если был — панель уже потеряла линию, сторож
-     один раз будит её переключением `--off` → `--mode`;
-   - если обрыва не было — выход **не трогает вообще** (профилактическое
-     переключение при живой панели само вызывает обрыв и гасит экран);
-   - дальше опрашивает `/sys/class/drm/card0-HDMI-A-1/status` каждые 0.3 с (обрыв
-     длится ~0.3 с, редкий опрос его не видит) и реагирует только на реальную
-     потерю линии, не чаще раза в минуту.
-
-   Почему служба, а не автозапуск в сеансе: у пользователя `kernel.dmesg_restrict=1`
-   (журнал ядра закрыт), а автозапуск сеанса поднимается **позже** обрыва — обрыв на
-   10-й секунде, сеанс стартует около 11-й, и событие пропускается.
-4. **`autostart/display-1024x600.desktop`** — автозапуск скрипта режима в сессии XFCE.
-5. **`tools/panel-diag.sh`** — диагностика «что видит система»: разъёмы, режимы,
-   EDID, журнал HPD, служба, тач. Ничего не меняет.
-
-### Почему не задать режим параметром ядра
-
-Пробовали, на этой плате не работает:
-
-- `video=HDMI-A-1:D` ядро понимает не как «взять режим из EDID», а как тип выхода:
-  в журнале появляется `mode set: 1024*768`, потом снова 1920x1080;
-- режим `1024x600@66` из командной строки не выбрать: родной режим панели
-  **отсутствует в списке режимов ядра** — вендорный разбор EDID в `sunxi-hdmi`
-  отбрасывает этот DTD (`unsupport parser desc type`). В
-  `/sys/class/drm/card0-HDMI-A-1/modes` только 1920x1080, 1280x1024, 1440x900
-  и 1280x720.
-
-Xorg разбирает тот же EDID сам и видит правильный режим — поэтому настройка живёт
-на уровне X, а не в командной строке ядра.
-
-## Тач и мультитач
-
-Тач панели — отдельное USB-HID устройство `0484:5750`. В ядре `6.6.98-sun60iw2`
-выключен `CONFIG_HID_MULTITOUCH`, поэтому без модуля касания отдают мусорные
-координаты (все — в правый нижний угол, курсор не двигается), хотя в журнале
-устройство выглядит исправным.
-
-Модуль собран и проверен на этой плате; полный рецепт без заголовков ядра —
-**[docs/hid-multitouch-4pro.md](docs/hid-multitouch-4pro.md)**. Кратко: клонировать
-вендорную ветку `orange-pi-6.6-sun60iw2`, сгенерировать `Module.symvers` из
-`/proc/kallsyms` (формат 6.6 — пять полей с завершающим табом), добавить в
-`mt_devices[]` строку `HID_USB_DEVICE(0x0484, 0x5750)` (готовый патч лежит в
-`patches/`), собрать `hid-multitouch.ko` и прописать автозагрузку.
-
-Признак успеха — в возможностях устройства появляются `ABS_MT_POSITION_X/Y`,
-`ABS_MT_SLOT` и `ABS_MT_TRACKING_ID`: `cat /sys/class/input/event6/device/capabilities/abs`
-показывает `273800000000003` вместо `10000000003`.
-
+Сторож `hdmi-panel-watch` и разовая побудка `panel-wake-once` **удалены**:
+это были обходные пути для старого поведения. Если они уже установлены на
+плате — отключите и удалите их (команды в `INSTALL.md`).
 
 ## Установка
 
-Полная пошаговая инструкция с готовыми блоками для копирования (включая полный код
-каждого файла, если git недоступен): **[INSTALL.md](INSTALL.md)**.
-
-Короткий путь:
+Кратко:
 
 ```bash
 git clone https://github.com/Haidegger22/orangepi4pro-5inch-hdmi-panel-fix.git
 cd orangepi4pro-5inch-hdmi-panel-fix
-
-sudo cp -a /etc/X11/xorg.conf.d/20-modesetting.conf \
-           /etc/X11/xorg.conf.d/20-modesetting.conf.bak-$(date +%Y%m%d)
-sudo install -m 0664 files/20-modesetting.conf /etc/X11/xorg.conf.d/20-modesetting.conf
-
-install -d ~/.local/bin ~/.config/autostart
-install -m 0755 files/set-display-1024x600.sh ~/.local/bin/
-install -m 0644 autostart/display-1024x600.desktop ~/.config/autostart/
-
-sudo install -m 0755 files/hdmi-panel-watch.sh /usr/local/bin/hdmi-panel-watch.sh
-sudo install -m 0644 systemd/hdmi-panel-watch.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now hdmi-panel-watch
-
-sudo systemctl restart lightdm
 ```
+
+Затем:
+
+1. Сделать бэкап DTB.
+2. Добавить `force-output` и `force-output-timing`.
+3. Установить `files/20-modesetting.conf`.
+4. Перезагрузиться.
+
+Полные команды — в **[INSTALL.md](INSTALL.md)**.
 
 ## Проверка
 
 ```bash
-bash tools/panel-diag.sh
-systemctl is-enabled hdmi-panel-watch; systemctl is-active hdmi-panel-watch
+sudo fdtget -t i /boot/dtb/allwinner/sun60i-a733-orangepi-4-pro.dtb \
+    /soc@3000000/hdmi0@5520000 force-output
+sudo fdtget -t s /boot/dtb/allwinner/sun60i-a733-orangepi-4-pro.dtb \
+    /soc@3000000/hdmi0@5520000 force-output-timing
+sudo dmesg | grep -E 'Configuration mode|mode set:|hpd (dis)?connect'
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority xrandr --query | head -3
 ```
 
-Что должно быть видно:
+Ожидается:
 
-- `HDMI-1 connected 1024x600+0+0`;
-- `panel_1024x600 66.45*+` в списке режимов;
-- в журнале ядра `pixel clock 50000KHz` и `snps phy state: lock`;
-- после 13-й секунды загрузки — ни одного нового `hpd disconnect`;
-- служба `hdmi-panel-watch` в состоянии `enabled` / `active`.
-
-## Ограничения
-
-- **Сенсор.** Мультитач требует модуля `hid-multitouch`, которого нет в ядре
-  (`CONFIG_HID_MULTITOUCH is not set`). Для этой панели модуль уже собран и проверен,
-  рецепт — [docs/hid-multitouch-4pro.md](docs/hid-multitouch-4pro.md).
-- **Кабель и питание тут ни при чём.** Проверено: с исправным кабелем EDID читается
-  полностью, перестановка USB-C с порта USB 2.0 на USB 3.0 картину не меняет.
-  Не доверяйте `stat -c %s /sys/class/drm/card0-HDMI-A-1/edid` — для sysfs-атрибута
-  он всегда равен 0; читайте сам файл (`od -An -tx1`).
-- **Другой экран — другие цифры.** Возьмите моделайн из EDID своей панели:
-  `DISPLAY=:0 xrandr --verbose` (раздел EDID) либо `/var/log/Xorg.0.log`
-  (`Modeline "..."x0.0 ... (DDC gathered)`).
-- **Только X11.** При Wayland (Weston/labwc) на `sun60iw2` KMS-коммит не работает,
-  `xrandr` не применяется — способ не подойдёт.
+- `force-output` = `1`;
+- тайминг `50000-1024-1032-1042-1204-600-603-609-625`;
+- в журнале `Configuration mode 1024x600@66Hz` и **нет** `hpd disconnect`
+  после загрузки;
+- `HDMI-1 connected primary 1024x600+0+0`;
+- `panel_1024x600 50.000MHz ... 66.45*+`.
 
 ## Откат
 
+Вернуть DTB из бэкапа, созданного при установке:
+
 ```bash
-sudo cp -a $(ls -t /etc/X11/xorg.conf.d/20-modesetting.conf.bak-* | head -1) \
-           /etc/X11/xorg.conf.d/20-modesetting.conf
-sudo systemctl disable --now hdmi-panel-watch
-sudo rm -f /usr/local/bin/hdmi-panel-watch.sh /etc/systemd/system/hdmi-panel-watch.service
-sudo systemctl daemon-reload
-rm -f ~/.local/bin/set-display-1024x600.sh ~/.config/autostart/display-1024x600.desktop
-sudo systemctl restart lightdm
+sudo cp -a /boot/dtb/allwinner/sun60i-a733-orangepi-4-pro.dtb.bak-force-* \
+           /boot/dtb/allwinner/sun60i-a733-orangepi-4-pro.dtb
+sync
+sudo reboot
 ```
+
+## Ограничения
+
+- Проверено на Xorg/X11. Для Wayland на `sun60iw2` KMS-коммит может не
+  проходить; это отдельная история.
+- Обновление ядра/DTB может заменить файл и потерять свойства. После такого
+  обновления их нужно добавить снова (команды в `INSTALL.md`).
+- Моделайн панели — **50.000 МГц, 66.45 Гц**. Не заменяйте его на `cvt`-режим
+  49.00 МГц / 60 Гц: панель его не держит.
+- `stat -c %s` на sysfs-EDID всегда даёт 0; читайте сам файл через `od`.
+
+## Тач и мультитач
+
+В ядре `6.6.98-sun60iw2` выключен `CONFIG_HID_MULTITOUCH`, поэтому без модуля
+касания работают неправильно. Модуль собран и проверен; полный рецепт —
+**[docs/hid-multitouch-4pro.md](docs/hid-multitouch-4pro.md)**, готовый патч —
+`patches/hid-multitouch-add-qdtech-mpi5001.patch`.
 
 ## Лицензия
 
